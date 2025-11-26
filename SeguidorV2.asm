@@ -8,6 +8,8 @@
         SENSOR_IZQ
         SENSOR_DER
         W_TEMP
+        TIEMPO_A
+        TIEMPO_B
     ENDC
 
     ORG 0x00
@@ -48,6 +50,8 @@ INICIO:
     ; Vuelvo al banco 0 para continuar con la lógica del PROGRAMA
     BCF STATUS, RP0
 
+    CLRF PORTC ; Limpio el PuertoC (los motores) para evitar posibles inicios con arranques por basura en memoria
+
 ; MENÚ DE SELECCIÓN DE MODO DE OPERACION (Botones viven en PuertoA)
 MENU:
     BTFSC PORTA, 0 ; Si se presiona botón 0
@@ -61,18 +65,91 @@ MENU:
 
     GOTO MENU ; si no se presiona ninguno volver al menú
 
-; MODO 1. Seguidor de Línea (Sensores de línea viven en PuertoB)
-MODO_SEGUIDOR: ; ---------------------
+; MODO 1. Seguidor de Línea
+MODO_SEGUIDOR:
+    CLRF BANDERA_T ; limpiamos la bandera que indica si se encontró una "T"
+
+    CALL SIGUE_LINEA ; llamamos a la función de seguimiento de línea
+
+    BTFSC BANDERA_T, 0 ; si encontramos una "T"
+    GOTO MENU ; salimos del modo 1 y vamos al menú
+
+    GOTO MODO_SEGUIDOR ; si no encontramos una "T" repetimos (para continuar seguimiento de línea)
+
+; MODO 2. Grabación de Recorrido
+MODO_GRABADOR:
+    MOVLW 0x30
+    MOVWF FSR
+
+; LIMPIEZA
+BUCLE_LIMPIEZA:
+    CLRF INDF ; limpiar posicion actual del FSR
+
+    INCF FSR ; ir al siguiente espacio de memoria
+
+    CALL REV_FINAL_MEMORIA
+
+    BTFSS STATUS, Z ; si FSR - 0x80 es diferente de 0
+    GOTO BUCLE_LIMPIEZA ; Volvemos al bucle de limpieza
+
+; GRABACION
+    MOVLW 0x30
+    MOVWF FSR
+
+BUCLE_GRABACION:
     CLRF BANDERA_T
 
     CALL SIGUE_LINEA
 
+    MOVF PORTC, 0
+    MOVWF INDF
+
     BTFSC BANDERA_T, 0
     GOTO MENU
 
-    GOTO MODO_SEGUIDOR
+    INCF FSR
 
-SIGUE_LINEA: ; ----------------------------
+    CALL REV_FINAL_MEMORIA
+
+    CALL RETARDO
+
+    BTFSS STATUS, Z
+    GOTO BUCLE_GRABACION
+
+    GOTO MENU ; si llega acá se llenó la memoria, sin encontrarse nunca una "T"
+
+; MODO 3. Lectura de memoria
+MODO_LECTURA:
+    MOVLW 0x30
+    MOVWF FSR ; nos paramos en el inicio de la grabación
+
+BUCLE_LECTURA:
+    MOVF INDF, 0
+    MOVWF PORTC
+
+    BTFSC STATUS, Z
+    GOTO FRENAR_Y_SALIR
+
+    INCF FSR
+
+    CALL REV_FINAL_MEMORIA
+    BTFSC STATUS, Z
+    GOTO MENU
+    
+    CALL RETARDO
+    GOTO BUCLE_LECTURA
+
+FRENAR_Y_SALIR:
+    CALL FRENAR_MOTORES
+    GOTO MENU
+
+REV_FINAL_MEMORIA:
+    MOVLW 0x80
+    SUBWF FSR, 0 ; FSR - 0x80 -> W
+    RETURN
+
+; subrutina de seguimiento de línea
+SIGUE_LINEA:
     ; ASUMIENDO 1 = SENSOR VE LÍNEA NEGRA
     CALL REVISA_FIN
     BTFSC BANDERA_T, 0
@@ -94,7 +171,7 @@ REVISA_FIN:
     BSF BANDERA_T, 0
     RETURN
 
-; Rutina para decidir dirección del carrito
+; Rutina para decidir dirección del carrito (Sensores de línea viven en el PuertoB)
 REVISA_DIRECCION:
     ; ASUMIENDO 1 = SENSOR VE LÍNEA NEGRA
     BSF SENSOR_IZQ, 0
@@ -155,10 +232,23 @@ FRENAR_MOTORES:
 
     RETURN
 
-MODO_GRABADOR:
-    GOTO MENU
+; Bucle de retardo personalizado
+RETARDO:
+    MOVLW d'255'
+    MOVWF TIEMPO_A
 
-MODO_LECTURA:
-    GOTO MENU
+RETARDO_EXTERNO:
+    MOVLW d'196'
+    MOVWF TIEMPO_B
+
+RETARDO_INTERNO:
+    NOP
+    DECFSZ TIEMPO_B, 1
+    GOTO RETARDO_INTERNO
+
+    DECFSZ TIEMPO_A, 1
+    GOTO RETARDO_EXTERNO
+
+    RETURN
 
     END
